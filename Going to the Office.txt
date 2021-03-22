@@ -1,0 +1,863 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using System.Linq;
+using TestHackerRank;
+
+class Solution
+{
+    public class Reader
+    {
+        public Reader(string file = null)
+        {
+            // In Visual Studio, there are three bytes before the actual text
+            // in the file that you redirect.
+            if (null == file)
+            {
+                _reader = Console.In;
+#if VS
+                Console.Read();
+                Console.Read();
+                Console.Read();
+#endif
+            }
+            else
+            {
+                _reader = File.OpenText(file);
+            }
+        }
+
+        public string ReadLine()
+        {
+            return _reader.ReadLine();
+        }
+
+        TextReader _reader;
+    }
+
+    static void Main(String[] argsx)
+    {
+#if VS
+        var reader = new Reader(@"C:\Users\250894\Documents\Visual Studio 2015\Projects\TestHackerRank\TestInput2-1.txt");
+#else
+        var reader = new Reader();
+#endif
+        string[] args = reader.ReadLine().Split(' ');
+        int nCities = Convert.ToInt32(args[0]);
+        int nRoutes = Convert.ToInt32(args[1]);
+        var adjMatrix = (from x in new int[nCities] select new Dictionary<int, int>()).ToArray();
+        for (int i = 0; i < nRoutes; i++)
+        {
+            var edge = (from s in reader.ReadLine().Split(' ') select Convert.ToInt32(s)).ToArray();
+            int c1 = edge[0];
+            int c2 = edge[1];
+            int dist = edge[2];
+            // This is an undirected graph, so we'll populate it in both
+            // directions.
+            adjMatrix[c1][c2] = adjMatrix[c2][c1] = dist;
+        }
+        args = reader.ReadLine().Split(' ');
+        int orig = Convert.ToInt32(args[0]);
+        int dest = Convert.ToInt32(args[1]);
+        int q = Convert.ToInt32(reader.ReadLine());
+        var solver = new Dijsktra(adjMatrix, orig, dest);
+        for (int i = 0; i < q; i++)
+        {
+            args = reader.ReadLine().Split(' ');
+            int c1 = Convert.ToInt32(args[0]);
+            int c2 = Convert.ToInt32(args[1]);
+
+            int dist = solver.Reroute(c1, c2);
+            Console.WriteLine(dist != int.MaxValue ? dist.ToString() : "Infinity");
+        }
+    }
+}
+
+namespace TestHackerRank
+{
+    public class Node : IComparable
+    {
+        public Node(int id, IList<Node> nodes)
+        {
+            Id = id;
+            Dist = int.MaxValue;
+            Previous = -1;
+            Nodes = nodes;
+            Island = -1;
+        }
+        public int CompareTo(object other)
+        {
+            int retVal = 1;
+            if (null != other && other is Node)
+            {
+                retVal = Dist.CompareTo(((Node)other).Dist);
+            }
+            else
+            {
+                throw new ArgumentException("Object is not a DistNode");
+            }
+
+            return retVal;
+        }
+        public int Id { get; set; }
+        public int Dist { get; set; }
+        public IList<Node> Nodes { get; private set; }
+        public int Island { get; set; }
+        public int Previous { get; set; }
+        private List<int> _neighbors;
+        public List<int> Neighbors
+        {
+            get
+            {
+                if (null == _neighbors)
+                {
+                    _neighbors = new List<int>();
+                }
+                return _neighbors;
+            }
+            set
+            {
+                _neighbors = value;
+            }
+        }
+
+        public IList<int> Path
+        {
+            get
+            {
+                List<int> retVal = new List<int>();
+                var current = this;
+                while(current.Dist != 0 && current.Dist != -1 && current.Dist != int.MaxValue)
+                {
+                    retVal.Add(current.Id);
+                    current = Nodes[current.Previous];
+                }
+                return retVal;
+            }
+        }
+
+        public override int GetHashCode()
+        {
+            return Id.GetHashCode();
+        }
+        public override string ToString()
+        {
+            StringBuilder sb = new StringBuilder(string.Format("Id: {0}", Id));
+            if (int.MaxValue != Dist)
+            {
+                sb.AppendFormat(", Dist: {0}", Dist);
+            }
+            if (-1 != Previous)
+            {
+                sb.AppendFormat(", Previous: {0}", Previous);
+            }
+            if (null != _neighbors && 0 != _neighbors.Count)
+            {
+                sb.AppendFormat(", Neighbor Count: {0}", _neighbors.Count);
+            }
+            if(-1 != Island)
+            {
+                sb.AppendFormat(", Island: {0}", Island);
+            }
+            return sb.ToString();
+        }
+
+        public override bool Equals(object obj)
+        {
+            bool ret = false;
+            if (null != obj && obj is Node)
+            {
+                ret = ((Node)obj).Id == Id;
+            }
+            return ret;
+        }
+    }
+
+    public class Edge : IComparable
+    {
+        public Edge(int v1, int v2, int dist, int fromOrigin, int fromDest)
+        {
+            V1 = v1;
+            V2 = v2;
+            Distance = dist;
+            dsU = fromOrigin;
+            dtV = fromDest;
+            Bridge = false;
+            Iu = Iv = -1;
+        }
+
+        public static bool IsForward(int node, int neighbor, IList<Node> nodes)
+        {
+            return nodes[node].Dist < nodes[neighbor].Dist;
+        }
+
+        /// <summary>
+        /// True if this is a bridge.
+        /// </summary>
+        public bool Bridge { get; set; }
+        /// <summary>
+        /// Vertex 1.
+        /// </summary>
+        public int V1 { get; private set; }
+        /// <summary>
+        /// Vertex 2.
+        /// </summary>
+        public int V2 { get; private set; }
+        /// <summary>
+        /// Cost for traversing this edge.
+        /// </summary>
+        public int Distance { get; private set; }
+        /// <summary>
+        /// Distance from the beginning of this edge to the start vertex.
+        /// </summary>
+        public int dsU { get; private set; }
+        /// <summary>
+        /// Distance from the end of this edge to the end vertex.
+        /// </summary>
+        public int dtV { get; private set; }
+        /// <summary>
+        /// Index to this edge in the collection sorted by distance from beginning point to the beginning of this edge (dsU).
+        /// </summary>
+        public int Iu { get; set; }
+        /// <summary>
+        /// Index to this edge in the collection sorted by distance from beginning point to the end of this edge (dsV).
+        /// </summary>
+        public int Iv { get; set; }
+        /// <summary>
+        /// Distance from end of this edge to the beginning point (calculated).
+        /// </summary>
+        public int dtU
+        {
+            get { return dtV + Distance; }
+        }
+        /// <summary>
+        /// Distance from the beginning of this edge to the end point (calculated).
+        /// </summary>
+        public int dsV
+        {
+            get { return dsU + Distance; }
+        }
+        public int TotalDistance
+        {
+            get { return dsU + Distance + dtV; }
+        }
+
+        public override string ToString()
+        {
+            string retVal = string.Format("{0} <==> {1}, Weight: {2}, dsU: {3}, dsV: {4}, dtV: {5}",
+                    V1, V2, Distance, dsU, dsV, dtV);
+            if (Bridge)
+            {
+                // This is not the best form, but ToString is only used here
+                // when debugging.
+                retVal += " Bridge";
+            }
+            return retVal;
+        }
+
+        public override bool Equals(object obj)
+        {
+            bool fRet = false;
+            if(null != obj && obj is Edge)
+            {
+                Edge other = (Edge)obj;
+                fRet =
+                    other.V1 == V1 &&
+                    other.V2 == V2 &&
+                    other.Distance == Distance &&
+                    other.dsU == dsU &&
+                    other.dtV == dtV;
+            }
+            return fRet;
+        }
+
+        public override int GetHashCode()
+        {
+            return (V1 + V2 + Distance + dsU + dtV).GetHashCode();
+        }
+
+        #region IComparable
+        int IComparable.CompareTo(object obj)
+        {
+            // We want to sort by dsU, reverse dsV, V1, and V2. If there is a
+            // case where all of these are equal, then something's wrong with
+            // the data.
+            int iRet = -1;
+            if(null != obj && obj is Edge)
+            {
+                var other = (Edge)obj;
+                if(0 == (iRet = other.dsU.CompareTo(dsU)) ||
+                    0 == (iRet = -(other.dsV.CompareTo(dsV))) ||
+                    0 == (iRet = other.V1.CompareTo(V1)))
+                {
+                    iRet = other.V2.CompareTo(V2);
+                }
+            }
+
+            return iRet;
+        }
+        #endregion
+
+        #region IComparers
+        public class BydsU : IComparer<Edge>
+        {
+            public int Compare(Edge x, Edge y)
+            {
+                var ret = x.dsU.CompareTo(y.dsU);
+                if(0 == ret)
+                {
+                    ret = - x.dsV.CompareTo(y.dsV);
+                }
+                if(0 == ret)
+                {
+                    ret = x.V1.CompareTo(y.V1);
+                }
+                if(0 == ret)
+                {
+                    ret = x.V2.CompareTo(y.V2);
+                }
+                return ret;
+            }
+        }
+        public class BydsV : IComparer<Edge>
+        {
+            public int Compare(Edge x, Edge y)
+            {
+                var ret = x.dsV.CompareTo(y.dsV);
+                if(0 == ret)
+                {
+                    ret = x.dsU.CompareTo(y.dsU);
+                }
+                if (0 == ret)
+                {
+                    ret = x.V1.CompareTo(y.V1);
+                }
+                if (0 == ret)
+                {
+                    ret = x.V2.CompareTo(y.V2);
+                }
+                return ret;
+            }
+        }
+        #endregion
+    }
+    
+    public class Dijsktra
+    {
+        public Dijsktra(IList<Dictionary<int, int>> paths, int src, int dest)
+        {
+            _paths = paths;
+            _src = src;
+            _dest = dest;
+            // Create the forward and reverse arrays.
+            _forwardNodes = CreateNodeArray(paths);
+            _reverseNodes = CreateNodeArray(paths);
+            _edgeDict = new Dictionary<Tuple<int, int>, Edge>();
+            Solve();
+        }
+
+        private static Node[] CreateNodeArray(IList<Dictionary<int, int>> paths)
+        {
+            // Create the nodes.
+            var retVal = new Node[paths.Count];
+            for(int i = 0; i < paths.Count; i++)
+            {
+                retVal[i] = new Node(i, retVal);
+            }
+            // Set up the adjacency.
+            for (int i = 0; i < paths.Count; i++)
+            {
+                foreach (var path in paths[i])
+                {
+                    retVal[i].Neighbors.Add(path.Key);
+                }
+            }
+            return retVal;
+        }
+
+        private IList<Dictionary<int, int>> _paths;
+        private Node[] _forwardNodes;
+        private Node[] _reverseNodes;
+        private HashSet<Node> _settled;
+        private MinHeap<Node> _unsettled;
+        private SortedSet<Edge> _optimalEdges;
+        private Dictionary<Tuple<int, int>, Edge> _edgeDict;
+        private List<Edge> _optimalByV;
+        private List<Edge> _optimalByU;
+        private int _src = -1;
+        private int _dest = -1;
+        private int _optimalDistance = -1;
+        List<int> _bypasses;
+
+        public void SortByDist(ref int v1, ref int v2)
+        {
+            // We're going to sort by distance.
+            // If dtV is the same, then dsU. If they're the same, then index number.
+            int n1, n2;
+            int dtV1 = _reverseNodes[v1].Dist;
+            int dtV2 = _reverseNodes[v2].Dist;
+            int dsU1 = _forwardNodes[v1].Dist;
+            int dsU2 = _forwardNodes[v2].Dist;
+            if(dtV1 != dtV2)
+            {
+                n1 = dtV1 > dtV2 ? v1 : v2;
+                n2 = dtV2 < dtV1 ? v2 : v1;
+            }
+            else if(dsU1 != dsU2)
+            {
+                n1 = dsU1 < dsU2 ? v1 : v2;
+                n2 = dsU2 > dsU1 ? v2 : v1;
+            }
+            else
+            {
+                n1 = v1 < v2 ? v1 : v2;
+                n2 = v2 > v1 ? v2 : v1;
+            }
+            v1 = n1;
+            v2 = n2;
+        }
+
+        public int Reroute(int closed1, int closed2)
+        {
+            SortByDist(ref closed1, ref closed2);
+            var edgeId = new Tuple<int, int>(closed1, closed2);
+            int retVal = _optimalDistance;
+            Edge edge = null;
+            if(_edgeDict.TryGetValue(edgeId, out edge) &&
+                edge.Bridge)
+            {
+                // We're getting the higher island number.
+                // Maybe later we'll just use the node that's further, since it
+                // should logically have the higher island number.
+                int bn = Math.Max(_forwardNodes[closed1].Island, _forwardNodes[closed2].Island) - 1;
+                retVal = _bypasses[bn];
+            }
+
+#if DEBUG_REROUTE
+            var save = _paths[closed1][closed2];
+            _paths[closed1].Remove(closed2);
+            _paths[closed2].Remove(closed1);
+            var nodes = CreateNodeArray(_paths);
+            int dist = RunDijsktra(nodes, _src, _dest);
+            _paths[closed1][closed2] = _paths[closed2][closed1] = save;
+            System.Diagnostics.Debug.Assert(dist == retVal);
+#endif
+
+
+            return retVal;
+        }
+
+        private int RunDijsktra(IList<Node> nodes, int first, int last)
+        {
+            _settled = new HashSet<Node>();
+            _unsettled = new MinHeap<Node>();
+            nodes[first].Dist = 0;
+            _unsettled.Add(nodes[first]);
+            while(0 != _unsettled.Count)
+            {
+                var node = _unsettled.PopMin();
+                _settled.Add(node);
+                foreach (var iAdjNode in node.Neighbors)
+                {
+                    var adjNode = nodes[iAdjNode];
+                    if (!_settled.Contains(adjNode) &&
+                        int.MaxValue != node.Dist &&
+                        adjNode.Dist > node.Dist + _paths[node.Id][adjNode.Id])
+                    {
+                        adjNode.Dist = node.Dist + _paths[node.Id][adjNode.Id];
+                        adjNode.Previous = node.Id;
+                        _unsettled.Add(adjNode);
+                    }
+                }
+            }
+
+            return nodes[last].Dist;
+        }
+
+        private int RunDijsktra()
+        {
+            // First, calculate the forward path.
+            int retVal = RunDijsktra(_forwardNodes, _src, _dest);
+
+            // Next, calculate the reverse path.
+            RunDijsktra(_reverseNodes, _dest, _src);
+
+            return retVal;
+        }
+
+        public bool IsBridge(Edge e)
+        {
+            bool fRet = false;
+            int iu = e.Iu;
+            int iv = e.Iv;
+            Edge ep;
+
+            // First of all, e.V is always > e.U. So, if we start with e.Iv,
+            // it's going to point to an edge where V > e.U.
+            // * For now, I'm going on the assumption that the cost will always
+            //   be greater than zero. If we have paths where the cost is zero,
+            //   it will cause this algorithm to be more complicated. I'm not
+            //   even sure Dijkstra's algorithm will handle zero-cost. It
+            //   definitely requires changes to handle negative.
+            ep = e;
+            // The next step is to move backwards to see if e is the first
+            // edge that meets that condition.
+            while (ep.dsV > e.dsU)
+            {
+                if (--iv < 0)
+                {
+                    iv = 0;
+                    break;
+                }
+                ep = _optimalByV[iv];
+            }
+
+            // Now, these are the possibilities (and sub-possibilities).
+            // * We're pointing to an edge with a V <= e.U.
+            // * We're pointing to e
+            //   * It's the first edge in the list.
+            //   * It's the only edge in the list.
+            // * We're pointing to the first edge in the list, and V > e.U.
+
+            // The first one's the easiest. We just need to move forward one.
+            if (ep.dsV <= e.dsU)
+            {
+                // Let's point to the next one, which will satisfy V > e.U.
+                ep = _optimalByV[++iv];
+            }
+            // Next, the cases where ep == e.
+            if (iv == e.Iv) // This is a lot faster than Equals.
+            {
+                // Is e the last edge in the list? If so, then it's definitely
+                // a bridge since there can't be any edges where V > e.U.
+                if (iv == _optimalByV.Count - 1)
+                {
+                    fRet = true;
+                }
+                // Otherwise, we just need to move forward one.
+                else
+                {
+                    ep = _optimalByV[++iv];
+                }
+            }
+            // If we're pointing to the first edge in the list, and V > e.U,
+            // then we're already where we need to be.
+
+            // Now, we're either pointing to an edge that isn't e whose V > e.U
+            // or this is a bridge.
+
+            // If we haven't already definitely confirmed bridge status, let's
+            // find the first edge with a U that's less than e.V.
+            if (!fRet)
+            {
+                // Once again, we'll start with e because e.U will always be < e.V.
+                ep = e;
+                // Move forward to the first U that's >= e.V.
+                while (ep.dsU < e.dsV)
+                {
+                    if (++iu >= _optimalByU.Count)
+                    {
+                        iu--;
+                        break;
+                    }
+                    ep = _optimalByV[iu];
+                }
+                // Once again, we have to handle the different possibilities and
+                // sub-possibilities.
+                // * We're pointing to an edge where U >= e.V.
+                // * We're pointing to e.
+                //   * It's the last edge in the list.
+                //   * It's the first edge in the list.
+                // * We're pointing to the last edge in the list, and U < e.V.
+
+                // Again, the first case is simple.
+                if (ep.dsU >= e.dsV)
+                {
+                    // Let's point to the previous one, which will satisfy
+                    // U < e.V.
+                    ep = _optimalByU[--iu];
+                }
+                // Next, the cases where ep == e.
+                if (iu == e.Iu) // This is a lot faster than Equals.
+                {
+                    // Is e the first edge in the list? If so, then it's definitely
+                    // a bridge since there can't be any edges where U < e.V.
+                    if (iu == 0)
+                    {
+                        fRet = true;
+                    }
+                    // Otherwise, we just need to back up by one.
+                    else
+                    {
+                        ep = _optimalByU[--iu];
+                    }
+                }
+            }
+
+            if(!fRet)
+            {
+                // If we're here, then we have an index to the first V > e.U
+                // and the first U < e.V.  We need to see if they intersect.
+
+                // We'll start with the first V that's > e.U.
+                var firstV = _optimalByV[iv];
+                if(firstV.Iu > iu)
+                {
+                    fRet = true;
+                }
+            }
+
+            return fRet;
+        }
+
+        public int Solve()
+        {
+            _optimalDistance = RunDijsktra();
+            if (-1 != _optimalDistance)
+            {
+#region Find the optimal edges.
+                _optimalEdges = new SortedSet<Edge>(new Edge.BydsU());
+                for (int node = 0; node < _forwardNodes.Length; node++)
+                {
+                    foreach (int neighbor in _forwardNodes[node].Neighbors)
+                    {
+                        // We're going to sort by distance from source so that we're always
+                        // moving towards the destination.
+                        int v1 = node;
+                        int v2 = neighbor;
+                        SortByDist(ref v1, ref v2);
+                        var edgeId = new Tuple<int, int>(v1, v2);
+                        if (!_edgeDict.ContainsKey(edgeId) &&
+                            v1 != v2 // Not possible with good data.
+                            )
+                        {
+                            var toStart = _forwardNodes[v1].Dist;
+                            var toEnd = _reverseNodes[v2].Dist;
+                            var edgeDist = _paths[v1][v2];
+                            var edge = new Edge(v1, v2, edgeDist, toStart, toEnd);
+                            _edgeDict[edgeId] = edge;
+                            // Test for optimal edge.
+                            if (toStart + edgeDist + toEnd == _optimalDistance)
+                            {
+                                if (!_optimalEdges.Contains(edge))
+                                {
+                                    _optimalEdges.Add(edge);
+                                }
+                            }
+                        }
+                    }
+                }
+#endregion
+
+#region Prepare sorted lists
+                // We need a list sorted by dsU. _optimalEdges already is, but
+                // we need it in a form that can be quickly accessed by index.
+                _optimalByU = new List<Edge>(_optimalEdges.Count);
+                int ie = 0;
+                foreach (var edge in _optimalEdges)
+                {
+                    edge.Iu = ie++;
+                    _optimalByU.Add(edge);
+                }
+                // We also need a list sorted by dsV.
+                _optimalByV = new List<Edge>(_optimalEdges.Count);
+                var sorted = _optimalEdges.OrderBy(ep => ep.dsV);
+                ie = 0;
+                foreach (var edge in sorted)
+                {
+                    edge.Iv = ie++;
+                    _optimalByV.Add(edge);
+                }
+#endregion
+
+#region Find Bridges
+                var bridges = new SortedSet<Edge>(new Edge.BydsV());
+
+                // Now, we'll go through the list sorted by dsU.
+                for (ie = 0; ie < _optimalEdges.Count; ie++)
+                {
+                    var e = _optimalByU[ie];
+                    if(IsBridge(e))
+                    {
+                        e.Bridge = true;
+                        bridges.Add(e);
+                    }                    
+                }
+#endregion
+
+#region Find Islands
+                Queue<Node> nodeQueue = new Queue<Node>();
+                nodeQueue.Enqueue(_forwardNodes[_src]);
+                _forwardNodes[_src].Island = 0;
+                while(nodeQueue.Count > 0)
+                {
+                    var node = nodeQueue.Dequeue();
+                    foreach (var neighbor in node.Neighbors)
+                    {
+                        var next = _forwardNodes[neighbor];
+                        if (Edge.IsForward(node.Id, neighbor, _forwardNodes))
+                        {
+                            int v1 = node.Id, v2 = neighbor;
+                            SortByDist(ref v1, ref v2);
+                            var edgeId = new Tuple<int, int>(v1, v2);
+                            var island = 
+                                _edgeDict.ContainsKey(edgeId) && _edgeDict[edgeId].Bridge ?
+                                Math.Max(node.Island + 1, next.Island) :
+                                Math.Max(node.Island, next.Island);
+                            if (next.Island != island)
+                            {
+                                next.Island = island;
+                                nodeQueue.Enqueue(next);
+                            }
+                        }
+                    }
+                }
+#endregion
+
+                // We'll create a collection of edge identifiers representing
+                // the bridges.  Then, we'll go through all of the non-bridge
+                // edges that span islands.  For every island in between, we'll
+                // check dsU + Distance + dtV, and if it's less than what's
+                // there, we'll update it.  When we're done, we'll have a lookup
+                // of bypass values.
+                _bypasses = (from item in new int[bridges.Count] select int.MaxValue).ToList();
+                foreach(var edge in _edgeDict.Values)
+                {
+                    // If it's not a bridge and it does span multiple islands.
+                    if(!edge.Bridge && _forwardNodes[edge.V1].Island != _forwardNodes[edge.V2].Island)
+                    {
+                        // It matters which one is closer to which end.
+                        int v1 = edge.V1, v2 = edge.V2;
+                        SortByDist(ref v1, ref v2);
+                        var first = _forwardNodes[v1].Island;
+                        var second = _forwardNodes[v2].Island;
+                        for(int i = first; i < second; i++)
+                        {
+                            _bypasses[i] = Math.Min(_bypasses[i], edge.TotalDistance);
+                        }
+                    }
+                }
+            }
+            return _optimalDistance;
+        }
+    }
+    
+    class MinHeap<T> where T : IComparable
+    {
+        public MinHeap(int cap = -1)
+        {
+            if (cap <= 0)
+            {
+                _items = new List<T>();
+            }
+            else
+            {
+                _items = new List<T>(cap);
+            }
+        }
+        public MinHeap(IList<T> items)
+        {
+            _items = items;
+            Reorder();
+        }
+
+        public void Reorder()
+        {
+            int heapSize = _items.Count - 1;
+            for (int i = heapSize / 2; i >= 0; i--)
+            {
+                SiftDown(i);
+            }
+        }
+
+        public int Count {  get { return _items.Count; } }
+
+        void SiftUp(int index, int exclusion = 0)
+        {
+            if(0 != index)
+            {
+                int parent = (index - 1) / 2;
+                if(_items[parent].CompareTo(_items[index]) > 0)
+                {
+                    T swap = _items[parent];
+                    _items[parent] = _items[index];
+                    _items[index] = swap;
+                    SiftUp(parent);
+                }
+            }
+        }
+
+        void SiftDown(int index, int exclusion = 0)
+        {
+            int heapLen = _items.Count - exclusion;
+            int left = (2 * index + 1);
+            int right = left + 1;
+            int min = index;
+            if (left < heapLen && _items[left].CompareTo(_items[min]) < 0)
+            {
+                min = left;
+            }
+            if (right < heapLen && _items[right].CompareTo(_items[min]) < 0)
+            {
+                min = right;
+            }
+            if (index != min)
+            {
+                T swap = _items[index];
+                _items[index] = _items[min];
+                _items[min] = swap;
+                SiftDown(min, exclusion);
+            }
+        }
+
+        public void Add(T item)
+        {
+            _items.Add(item);
+            if (_items.Count > 1)
+            {
+                SiftUp(_items.Count - 1);
+            }
+        }
+
+        public T PopMin()
+        {
+            T top = _items[0];
+            _items[0] = _items[_items.Count - 1];
+            Items.RemoveAt(_items.Count - 1);
+            if (_items.Count > 1)
+            {
+                SiftDown(0);
+            }
+            return top;
+        }
+
+        public T PeekMin()
+        {
+            return _items[0];
+        }
+
+        public IList<T> Items
+        {
+            get { return _items; }
+        }
+
+        static void Sort<I>(IList<I> items) where I : IComparable
+        {
+            var heap = new MinHeap<I>(items);
+            int sortedLen = 0;
+            for(int i = items.Count - 1; i >= 0; i--)
+            {
+                I swap = items[0];
+                items[0] = items[i];
+                items[i] = swap;
+                sortedLen++;
+                heap.SiftDown(0, sortedLen);
+            }
+        }
+
+        #region Private Fields
+        private IList<T> _items;
+        #endregion
+    }
+}
